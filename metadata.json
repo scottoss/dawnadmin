@@ -1,0 +1,6 @@
+{
+  "name": "DawnChat Admin Console",
+  "description": "Administrative moderation dashboard and universal entity inspector for DawnChat self-hosted StoatChat instance.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
