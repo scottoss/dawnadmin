@@ -1089,6 +1089,59 @@ class StoatApiClient {
   }
 
   // ===================== COMMUNICATION & ANNOUNCEMENTS =====================
+  public async fetchAnnouncementBot(): Promise<{
+    configured: boolean;
+    env_var: string;
+    bot_id: string;
+    bot: PlatformBot;
+  }> {
+    if (this.config.isDemo) {
+      return {
+        configured: true,
+        env_var: 'ANNOUNCEMENT_BOT_ID',
+        bot_id: '01DEMOBOT00000000000000001',
+        bot: {
+          _id: '01DEMOBOT00000000000000001',
+          owner: MOCK_ADMIN_USER._id,
+          user: {
+            _id: '01DEMOBOT00000000000000001',
+            username: 'DawnAnnouncer',
+            discriminator: '0000',
+            display_name: 'DawnChat Announcement Bot',
+            bot: { owner: MOCK_ADMIN_USER._id },
+          },
+          public: true,
+        },
+      };
+    }
+
+    try {
+      const res = await fetch('/api/mongo/communication/bot');
+      if (res.ok) {
+        return await res.json();
+      }
+    } catch (err) {
+      console.warn('Failed to fetch announcement bot config', err);
+    }
+
+    return {
+      configured: false,
+      env_var: 'ANNOUNCEMENT_BOT_ID',
+      bot_id: '01HQBOT0000000000000000000',
+      bot: {
+        _id: '01HQBOT0000000000000000000',
+        owner: '01ADMIN0000000000000000000',
+        user: {
+          _id: '01HQBOT0000000000000000000',
+          username: 'DawnAnnouncer',
+          discriminator: '0000',
+          display_name: 'DawnChat Announcement Bot',
+        },
+        public: true,
+      },
+    };
+  }
+
   public async sendAnnouncement(req: CommunicationBroadcastRequest): Promise<CommunicationBroadcastResult> {
     if (this.config.isDemo) {
       const recipientCount = req.target_type === 'all' ? 4 : (req.target_user_ids?.length || 1);

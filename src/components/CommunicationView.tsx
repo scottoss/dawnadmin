@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { AnnouncementBotConfig, User, PlatformAuditLog, CommunicationBroadcastResult } from '../types/stoat';
+import { PlatformBot, User, PlatformAuditLog, CommunicationBroadcastResult } from '../types/stoat';
 import { stoatApi } from '../services/stoatApi';
 import { getAutumnAvatarUrl } from '../utils/autumn';
 import {
@@ -31,7 +31,12 @@ interface CommunicationViewProps {
 }
 
 export const CommunicationView: React.FC<CommunicationViewProps> = ({ onInspectUser }) => {
-  const [announcementBot, setAnnouncementBot] = useState<AnnouncementBotConfig | null>(null);
+  const [announcementBot, setAnnouncementBot] = useState<{
+    configured: boolean;
+    env_var: string;
+    bot_id: string;
+    bot: PlatformBot;
+  } | null>(null);
   const [users, setUsers] = useState<User[]>([]);
   const [history, setHistory] = useState<PlatformAuditLog[]>([]);
   const [isLoadingInitial, setIsLoadingInitial] = useState(false);
@@ -60,13 +65,13 @@ export const CommunicationView: React.FC<CommunicationViewProps> = ({ onInspectU
   const loadData = useCallback(async () => {
     setIsLoadingInitial(true);
     try {
-      const [fetchedBotConfig, fetchedUsers, fetchedHistory] = await Promise.all([
-        stoatApi.fetchAnnouncementBotConfig(),
+      const [fetchedBotInfo, fetchedUsers, fetchedHistory] = await Promise.all([
+        stoatApi.fetchAnnouncementBot(),
         stoatApi.fetchMongoUsers(),
         stoatApi.fetchAnnouncementHistory(),
       ]);
 
-      setAnnouncementBot(fetchedBotConfig);
+      setAnnouncementBot(fetchedBotInfo);
       setUsers(fetchedUsers);
       setHistory(fetchedHistory);
     } catch (err: unknown) {
@@ -79,6 +84,10 @@ export const CommunicationView: React.FC<CommunicationViewProps> = ({ onInspectU
   useEffect(() => {
     loadData();
   }, [loadData]);
+
+  // Active Sender Bot profile
+  const senderBot = announcementBot?.bot || null;
+  const senderBotId = announcementBot?.bot_id || '01HQBOT0000000000000000000';
 
   // Toggle user selection
   const handleToggleUser = (userId: string) => {
@@ -128,7 +137,7 @@ export const CommunicationView: React.FC<CommunicationViewProps> = ({ onInspectU
     setBroadcastResult(null);
     try {
       const result = await stoatApi.sendAnnouncement({
-        bot_id: announcementBot?.bot_id,
+        bot_id: senderBotId,
         target_type: targetType,
         target_user_ids: targetType === 'users' ? selectedUserIds : undefined,
         content: messageContent.trim(),
@@ -143,7 +152,7 @@ export const CommunicationView: React.FC<CommunicationViewProps> = ({ onInspectU
       setBroadcastResult(result);
       setNotification({
         type: 'success',
-        text: `Announcement successfully broadcasted! Delivered to ${result.successful_deliveries} user(s).`,
+        text: `Announcement successfully broadcasted via @${senderBot?.user?.username || 'DawnBot'}! Delivered to ${result.successful_deliveries} user(s).`,
       });
 
       // Clear message content upon successful broadcast
@@ -238,76 +247,72 @@ export const CommunicationView: React.FC<CommunicationViewProps> = ({ onInspectU
           {/* Left Column: Form Settings & Composer (7 cols) */}
           <div className="lg:col-span-7 space-y-5">
             <form onSubmit={handleInitiateSend} className="p-6 bg-neutral-900/80 border border-neutral-800 rounded-2xl space-y-5">
-              {/* 1. Sender Bot (Configured in Server Environment) */}
-              <div>
-                <div className="flex items-center justify-between mb-2">
-                  <label className="text-xs font-bold text-white uppercase tracking-wider font-mono">
-                    1. Sender Bot
+              {/* Announcement Sender Bot (Configured in Env) */}
+              <div className="space-y-2">
+                <div className="flex items-center justify-between">
+                  <label className="block text-xs font-bold text-white uppercase tracking-wider font-mono">
+                    Announcement Sender Bot
                   </label>
-                  {announcementBot?.configured_in_env ? (
-                    <span className="px-2 py-0.5 rounded bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 font-mono text-[10px] font-semibold flex items-center gap-1">
-                      <CheckCircle2 className="w-3 h-3" />
-                      ENV: ANNOUNCEMENT_BOT_ID
-                    </span>
-                  ) : (
-                    <span className="px-2 py-0.5 rounded bg-amber-500/10 border border-amber-500/30 text-amber-300 font-mono text-[10px]">
-                      DEFAULT INSTANCE BOT
-                    </span>
-                  )}
+                  <span className="px-2 py-0.5 rounded bg-indigo-500/10 border border-indigo-500/30 text-indigo-300 font-mono text-[10px] font-semibold flex items-center gap-1">
+                    <Bot className="w-3 h-3" />
+                    ENV: ANNOUNCEMENT_BOT_ID
+                  </span>
                 </div>
 
-                <div className="p-3.5 bg-neutral-950 border border-neutral-800 rounded-xl flex items-center justify-between gap-3">
+                <div className="p-3.5 bg-neutral-950 border border-neutral-800 rounded-xl flex flex-col sm:flex-row sm:items-center justify-between gap-3">
                   <div className="flex items-center gap-3 min-w-0">
                     <div className="relative shrink-0">
-                      {announcementBot?.bot_user?.avatar ? (
+                      {senderBot?.user?.avatar ? (
                         <img
-                          src={getAutumnAvatarUrl(announcementBot.bot_user.avatar._id, announcementBot.bot_user.avatar.filename)}
-                          alt="Bot Avatar"
+                          src={getAutumnAvatarUrl(senderBot.user.avatar._id, senderBot.user.avatar.filename)}
+                          alt="Bot"
                           className="w-10 h-10 rounded-xl object-cover border border-neutral-700"
-                          onError={(e) => { (e.target as HTMLElement).style.display = 'none'; }}
                         />
                       ) : (
-                        <div className="w-10 h-10 rounded-xl bg-indigo-500/20 text-indigo-400 font-bold flex items-center justify-center text-xs border border-indigo-500/30">
-                          {(announcementBot?.bot_user?.username || 'BOT').slice(0, 2).toUpperCase()}
+                        <div className="w-10 h-10 rounded-xl bg-indigo-500/20 border border-indigo-500/30 text-indigo-400 font-bold flex items-center justify-center text-sm">
+                          {(senderBot?.user?.username || 'BOT').slice(0, 2)}
                         </div>
                       )}
+                      <span className="absolute -bottom-1 -right-1 w-3.5 h-3.5 bg-emerald-500 border-2 border-neutral-950 rounded-full" title="Active sender bot" />
                     </div>
 
                     <div className="min-w-0">
-                      <div className="flex items-center gap-2">
+                      <div className="flex items-center gap-2 flex-wrap">
                         <span className="font-bold text-sm text-white truncate">
-                          @{announcementBot?.bot_user?.username || 'DawnAnnouncer'}
+                          @{senderBot?.user?.username || 'DawnAnnouncer'}
                         </span>
-                        {announcementBot?.bot_user?.discriminator && (
-                          <span className="text-xs font-mono text-neutral-500">
-                            #{announcementBot.bot_user.discriminator}
-                          </span>
-                        )}
-                        <span className="px-1.5 py-0.2 rounded bg-indigo-600 text-white font-mono text-[9px] font-bold">
+                        <span className="px-1.5 py-0.2 rounded bg-indigo-500 text-white font-mono text-[9px] font-bold">
                           BOT
                         </span>
+                        {announcementBot?.configured ? (
+                          <span className="px-2 py-0.5 rounded bg-emerald-500/10 text-emerald-300 border border-emerald-500/20 text-[10px] font-mono">
+                            Configured in .env
+                          </span>
+                        ) : (
+                          <span className="px-2 py-0.5 rounded bg-neutral-800 text-neutral-400 border border-neutral-700 text-[10px] font-mono">
+                            System Default Bot
+                          </span>
+                        )}
                       </div>
-                      <div className="text-[11px] font-mono text-neutral-500 mt-0.5 truncate">
-                        ID: <code className="text-neutral-300">{announcementBot?.bot_id || 'System Announcer'}</code>
+                      <div className="text-[11px] font-mono text-neutral-400 mt-0.5 flex items-center gap-2 truncate">
+                        <span>Bot ID: <code className="text-neutral-300">{senderBotId}</code></span>
                       </div>
                     </div>
                   </div>
 
-                  <div className="text-right hidden sm:block shrink-0">
-                    <span className="text-[10px] font-mono text-neutral-500 block">Sender Control</span>
-                    <span className="text-[11px] text-neutral-400 font-medium">Configured in Env</span>
+                  <div className="text-right shrink-0">
+                    <span className="text-[10px] font-mono text-neutral-500 block uppercase">Mode</span>
+                    <span className="text-xs font-semibold text-emerald-400 flex items-center gap-1 justify-end">
+                      <Check className="w-3.5 h-3.5" /> Locked to Env
+                    </span>
                   </div>
                 </div>
-
-                <p className="text-[11px] text-neutral-500 mt-1.5">
-                  The announcement bot is controlled via the <code className="text-neutral-300 font-mono">ANNOUNCEMENT_BOT_ID</code> environment variable.
-                </p>
               </div>
 
-              {/* 2. Target Recipients Mode */}
+              {/* 1. Target Recipients Mode */}
               <div className="pt-2 border-t border-neutral-800">
                 <label className="block text-xs font-bold text-white uppercase tracking-wider font-mono mb-2">
-                  2. Select Recipients
+                  1. Select Recipients
                 </label>
 
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-3">
@@ -576,16 +581,15 @@ export const CommunicationView: React.FC<CommunicationViewProps> = ({ onInspectU
                 <div className="flex items-start gap-3">
                   {/* Bot Avatar */}
                   <div className="relative shrink-0 mt-0.5">
-                    {announcementBot?.bot_user?.avatar ? (
+                    {senderBot?.user?.avatar ? (
                       <img
-                        src={getAutumnAvatarUrl(announcementBot.bot_user.avatar._id, announcementBot.bot_user.avatar.filename)}
+                        src={getAutumnAvatarUrl(senderBot.user.avatar._id, senderBot.user.avatar.filename)}
                         alt="Bot"
                         className="w-9 h-9 rounded-xl object-cover border border-neutral-700"
-                        onError={(e) => { (e.target as HTMLElement).style.display = 'none'; }}
                       />
                     ) : (
-                      <div className="w-9 h-9 rounded-xl bg-indigo-500/20 text-indigo-400 font-bold flex items-center justify-center text-xs border border-indigo-500/30">
-                        {(announcementBot?.bot_user?.username || 'BOT').slice(0, 2).toUpperCase()}
+                      <div className="w-9 h-9 rounded-xl bg-indigo-500/20 text-indigo-400 font-bold flex items-center justify-center text-xs">
+                        {(senderBot?.user?.username || 'BOT').slice(0, 2)}
                       </div>
                     )}
                   </div>
@@ -594,13 +598,8 @@ export const CommunicationView: React.FC<CommunicationViewProps> = ({ onInspectU
                   <div className="flex-1 min-w-0 space-y-1.5">
                     <div className="flex items-center gap-2 flex-wrap">
                       <span className="font-bold text-xs text-white">
-                        {announcementBot?.bot_user?.username || 'DawnAnnouncer'}
+                        {senderBot?.user?.username || 'DawnAnnouncer'}
                       </span>
-                      {announcementBot?.bot_user?.discriminator && (
-                        <span className="text-[10px] font-mono text-neutral-500">
-                          #{announcementBot.bot_user.discriminator}
-                        </span>
-                      )}
                       <span className="px-1 py-0.2 rounded bg-indigo-500 text-white font-mono text-[8px] font-bold">
                         BOT
                       </span>
@@ -752,18 +751,9 @@ export const CommunicationView: React.FC<CommunicationViewProps> = ({ onInspectU
 
             <div className="space-y-3 text-xs">
               <div className="p-3.5 bg-neutral-950 rounded-xl border border-neutral-800 space-y-2">
-                <div className="flex justify-between items-center">
-                  <span className="text-neutral-400">Sender Bot:</span>
-                  <div className="flex items-center gap-1.5">
-                    <span className="text-white font-bold">@{announcementBot?.bot_user?.username || 'DawnAnnouncer'}</span>
-                    <span className="px-1.5 py-0.2 rounded bg-indigo-600 text-white font-mono text-[8px] font-bold">BOT</span>
-                  </div>
-                </div>
                 <div className="flex justify-between">
-                  <span className="text-neutral-400">Sender Source:</span>
-                  <span className="text-emerald-400 font-mono text-[11px] font-semibold">
-                    {announcementBot?.configured_in_env ? 'ANNOUNCEMENT_BOT_ID (Env)' : 'Instance Default'}
-                  </span>
+                  <span className="text-neutral-400">Sender Bot:</span>
+                  <span className="text-white font-bold">@{senderBot?.user?.username || 'DawnAnnouncer'}</span>
                 </div>
                 <div className="flex justify-between">
                   <span className="text-neutral-400">Recipients:</span>

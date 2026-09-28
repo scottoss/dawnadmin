@@ -1395,6 +1395,55 @@ export async function handleMongoCommunication(req: Request, res: Response) {
   const messagesColl = db.collection<any>('messages');
   const auditColl = db.collection<any>('platform_audit_logs');
 
+  if (req.method === 'GET' && (req.path.endsWith('/bot') || req.path.endsWith('/config'))) {
+    try {
+      const envBotId = (process.env.ANNOUNCEMENT_BOT_ID || process.env.VITE_ANNOUNCEMENT_BOT_ID || process.env.BOT_ID || '').trim();
+      let resolvedBotId = envBotId;
+
+      // If not configured in env, find the first bot in bots collection or fallback
+      if (!resolvedBotId) {
+        const firstBot = await botsColl.findOne({});
+        if (firstBot) {
+          resolvedBotId = firstBot._id || firstBot.user_id;
+        } else {
+          resolvedBotId = '01HQBOT0000000000000000000';
+        }
+      }
+
+      let botUser = await usersColl.findOne({ _id: resolvedBotId });
+      if (!botUser) {
+        const botDoc = await botsColl.findOne({ $or: [{ _id: resolvedBotId }, { user_id: resolvedBotId }] });
+        if (botDoc) {
+          botUser = await usersColl.findOne({ _id: botDoc._id || botDoc.user_id });
+        }
+      }
+
+      if (!botUser) {
+        botUser = {
+          _id: resolvedBotId,
+          username: 'DawnAnnouncer',
+          discriminator: '0000',
+          display_name: 'DawnChat Announcement Bot',
+          bot: { owner: '01ADMIN0000000000000000000' },
+        };
+      }
+
+      res.json({
+        configured: Boolean(envBotId),
+        env_var: 'ANNOUNCEMENT_BOT_ID',
+        bot_id: resolvedBotId,
+        bot: {
+          _id: resolvedBotId,
+          user: botUser,
+          public: true,
+        },
+      });
+    } catch (err: unknown) {
+      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+    }
+    return;
+  }
+
   if (req.method === 'GET' && req.path.endsWith('/history')) {
     try {
       const logs = await auditColl
@@ -1426,25 +1475,24 @@ export async function handleMongoCommunication(req: Request, res: Response) {
         return;
       }
 
-      if (!bot_id) {
-        res.status(400).json({ error: 'Sender bot ID is required' });
-        return;
-      }
+      // Priority: 1. ANNOUNCEMENT_BOT_ID from env, 2. payload bot_id, 3. fallback system bot
+      const envBotId = (process.env.ANNOUNCEMENT_BOT_ID || process.env.VITE_ANNOUNCEMENT_BOT_ID || process.env.BOT_ID || '').trim();
+      const effectiveBotId = envBotId || bot_id || '01HQBOT0000000000000000000';
 
       // Verify sender bot exists in users or bots collection
-      let senderBotUser = await usersColl.findOne({ _id: bot_id });
+      let senderBotUser = await usersColl.findOne({ _id: effectiveBotId });
       if (!senderBotUser) {
-        const botDoc = await botsColl.findOne({ $or: [{ _id: bot_id }, { user_id: bot_id }] });
+        const botDoc = await botsColl.findOne({ $or: [{ _id: effectiveBotId }, { user_id: effectiveBotId }] });
         if (botDoc) {
           senderBotUser = await usersColl.findOne({ _id: botDoc._id || botDoc.user_id }) || {
-            _id: bot_id,
+            _id: effectiveBotId,
             username: 'DawnBot',
             discriminator: '0000',
           };
         } else {
           // Allow system default fallback bot
           senderBotUser = {
-            _id: bot_id,
+            _id: effectiveBotId,
             username: 'DawnAnnouncer',
             discriminator: '0000',
           };
@@ -1456,7 +1504,7 @@ export async function handleMongoCommunication(req: Request, res: Response) {
       if (target_type === 'all') {
         const allUsers = await usersColl
           .find({
-            _id: { $ne: bot_id },
+            _id: { $ne: effectiveBotId },
             disabled: { $ne: true },
           })
           .project({ _id: 1, bot: 1 })
@@ -1466,7 +1514,7 @@ export async function handleMongoCommunication(req: Request, res: Response) {
         const nonBotUsers = allUsers.filter((u) => !u.bot || !u.bot.owner);
         recipientUserIds = (nonBotUsers.length > 0 ? nonBotUsers : allUsers).map((u) => u._id);
       } else if (Array.isArray(target_user_ids) && target_user_ids.length > 0) {
-        recipientUserIds = Array.from(new Set(target_user_ids.filter((id) => id && id !== bot_id)));
+        recipientUserIds = Array.from(new Set(target_user_ids.filter((id) => id && id !== effectiveBotId)));
       } else {
         res.status(400).json({ error: 'No recipients selected' });
         return;
@@ -1474,7 +1522,7 @@ export async function handleMongoCommunication(req: Request, res: Response) {
 
       if (recipientUserIds.length === 0) {
         // In case there are no extra users yet, send to the actor/current admin as test recipient
-        if (actor_id && actor_id !== bot_id) {
+        if (actor_id && actor_id !== effectiveBotId) {
           recipientUserIds = [actor_id];
         } else {
           res.status(400).json({ error: 'No eligible recipients found' });
@@ -1488,10 +1536,10 @@ export async function handleMongoCommunication(req: Request, res: Response) {
       // Broadcast message to each recipient DM
       for (const targetUserId of recipientUserIds) {
         try {
-          // Find or create DirectMessage channel between bot_id and targetUserId
+          // Find or create DirectMessage channel between effectiveBotId and targetUserId
           let dmChannel = await channelsColl.findOne({
             channel_type: 'DirectMessage',
-            recipients: { $all: [bot_id, targetUserId] }
+            recipients: { $all: [effectiveBotId, targetUserId] }
           });
 
           if (!dmChannel) {
@@ -1500,7 +1548,7 @@ export async function handleMongoCommunication(req: Request, res: Response) {
               _id: newChannelId,
               channel_type: 'DirectMessage',
               active: true,
-              recipients: [bot_id, targetUserId],
+              recipients: [effectiveBotId, targetUserId],
               last_message_id: null,
             };
             await channelsColl.insertOne(dmChannel);
@@ -1519,7 +1567,7 @@ export async function handleMongoCommunication(req: Request, res: Response) {
           const messageDoc = {
             _id: messageId,
             channel: dmChannel._id,
-            author: bot_id,
+            author: effectiveBotId,
             content: content.trim(),
             embeds: embedsArray,
             created_at: new Date().toISOString(),
@@ -1543,12 +1591,12 @@ export async function handleMongoCommunication(req: Request, res: Response) {
         _id: `pal_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
         action: 'AnnouncementBroadcast',
         actor_id: actor_id || 'admin',
-        target_id: bot_id,
+        target_id: effectiveBotId,
         target_type: 'User',
         reason: `Broadcast sent via bot @${senderBotUser.username} to ${successCount} user(s)`,
         details: {
           broadcast_id: broadcastId,
-          bot_id,
+          bot_id: effectiveBotId,
           bot_username: senderBotUser.username,
           target_type,
           recipient_count: recipientUserIds.length,
