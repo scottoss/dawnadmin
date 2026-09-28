@@ -1093,6 +1093,8 @@ class StoatApiClient {
     configured: boolean;
     env_var: string;
     bot_id: string;
+    has_token?: boolean;
+    api_url?: string;
     bot: PlatformBot;
   }> {
     if (this.config.isDemo) {
@@ -1100,6 +1102,8 @@ class StoatApiClient {
         configured: true,
         env_var: 'ANNOUNCEMENT_BOT_ID',
         bot_id: '01DEMOBOT00000000000000001',
+        has_token: true,
+        api_url: 'https://api.dawn-chat.com',
         bot: {
           _id: '01DEMOBOT00000000000000001',
           owner: MOCK_ADMIN_USER._id,

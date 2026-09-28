@@ -293,17 +293,23 @@ export const CommunicationView: React.FC<CommunicationViewProps> = ({ onInspectU
                             System Default Bot
                           </span>
                         )}
+                        <span className="px-2 py-0.5 rounded bg-amber-500/10 text-amber-300 border border-amber-500/20 text-[10px] font-mono flex items-center gap-1">
+                          <Radio className="w-2.5 h-2.5 text-amber-400 animate-pulse" />
+                          WebSocket Events
+                        </span>
                       </div>
                       <div className="text-[11px] font-mono text-neutral-400 mt-0.5 flex items-center gap-2 truncate">
                         <span>Bot ID: <code className="text-neutral-300">{senderBotId}</code></span>
+                        <span>·</span>
+                        <span className="text-emerald-400">Library: stoat.js (revolt.js) Client</span>
                       </div>
                     </div>
                   </div>
 
                   <div className="text-right shrink-0">
-                    <span className="text-[10px] font-mono text-neutral-500 block uppercase">Mode</span>
+                    <span className="text-[10px] font-mono text-neutral-500 block uppercase">Client Authentication</span>
                     <span className="text-xs font-semibold text-emerald-400 flex items-center gap-1 justify-end">
-                      <Check className="w-3.5 h-3.5" /> Locked to Env
+                      <Check className="w-3.5 h-3.5" /> Logged In via stoat.js
                     </span>
                   </div>
                 </div>

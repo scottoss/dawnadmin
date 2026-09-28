@@ -4,6 +4,7 @@
 import type { Request, Response } from 'express';
 import crypto from 'crypto';
 import { getMongoDb, checkMongoStatus, setMongoConnectionConfig, getMongoConfig } from './mongo.ts';
+import { getOrInitBotClient, sendAnnouncementViaRevoltJs, getBotClientStatus } from './botClient.ts';
 
 const CROCKFORD_BASE32 = '0123456789ABCDEFGHJKMNPQRSTVWXYZ';
 
@@ -1410,12 +1411,25 @@ export async function handleMongoCommunication(req: Request, res: Response) {
         }
       }
 
+      // Check for bot token in env or bots collection
+      let botToken = (process.env.ANNOUNCEMENT_BOT_TOKEN || process.env.BOT_TOKEN || '').trim();
+      const botDoc = await botsColl.findOne({ $or: [{ _id: resolvedBotId }, { user_id: resolvedBotId }] }).catch(() => null);
+      if (!botToken && botDoc?.token) {
+        botToken = botDoc.token;
+      }
+
+      const apiUrl = (process.env.STOAT_API_URL || process.env.REVOLT_API_URL || process.env.VITE_STOAT_API_URL || process.env.API_URL || 'https://api.dawn-chat.com').replace(/\/+$/, '');
+
+      // Proactively initialize / verify revolt.js bot client if token is present
+      if (botToken) {
+        getOrInitBotClient(botToken, apiUrl).catch((err) => {
+          console.warn('[revolt.js] Background login attempt failed:', err);
+        });
+      }
+
       let botUser = await usersColl.findOne({ _id: resolvedBotId });
-      if (!botUser) {
-        const botDoc = await botsColl.findOne({ $or: [{ _id: resolvedBotId }, { user_id: resolvedBotId }] });
-        if (botDoc) {
-          botUser = await usersColl.findOne({ _id: botDoc._id || botDoc.user_id });
-        }
+      if (!botUser && botDoc) {
+        botUser = await usersColl.findOne({ _id: botDoc._id || botDoc.user_id });
       }
 
       if (!botUser) {
@@ -1428,10 +1442,15 @@ export async function handleMongoCommunication(req: Request, res: Response) {
         };
       }
 
+      const clientStatus = getBotClientStatus();
+
       res.json({
         configured: Boolean(envBotId),
         env_var: 'ANNOUNCEMENT_BOT_ID',
         bot_id: resolvedBotId,
+        has_token: Boolean(botToken),
+        api_url: apiUrl,
+        revolt_client: clientStatus,
         bot: {
           _id: resolvedBotId,
           user: botUser,
@@ -1479,10 +1498,25 @@ export async function handleMongoCommunication(req: Request, res: Response) {
       const envBotId = (process.env.ANNOUNCEMENT_BOT_ID || process.env.VITE_ANNOUNCEMENT_BOT_ID || process.env.BOT_ID || '').trim();
       const effectiveBotId = envBotId || bot_id || '01HQBOT0000000000000000000';
 
+      // Lookup bot token from env or database
+      let effectiveBotToken = (process.env.ANNOUNCEMENT_BOT_TOKEN || process.env.BOT_TOKEN || '').trim();
+      const botDoc = await botsColl.findOne({ $or: [{ _id: effectiveBotId }, { user_id: effectiveBotId }] }).catch(() => null);
+      if (!effectiveBotToken && botDoc?.token) {
+        effectiveBotToken = botDoc.token;
+      }
+
+      const apiUrl = (process.env.STOAT_API_URL || process.env.REVOLT_API_URL || process.env.VITE_STOAT_API_URL || process.env.API_URL || 'https://api.dawn-chat.com').replace(/\/+$/, '');
+
+      // Ensure revolt.js bot client is logged in
+      if (effectiveBotToken) {
+        await getOrInitBotClient(effectiveBotToken, apiUrl).catch((e) => {
+          console.warn('[revolt.js] Pre-broadcast login failed:', e);
+        });
+      }
+
       // Verify sender bot exists in users or bots collection
       let senderBotUser = await usersColl.findOne({ _id: effectiveBotId });
       if (!senderBotUser) {
-        const botDoc = await botsColl.findOne({ $or: [{ _id: effectiveBotId }, { user_id: effectiveBotId }] });
         if (botDoc) {
           senderBotUser = await usersColl.findOne({ _id: botDoc._id || botDoc.user_id }) || {
             _id: effectiveBotId,
@@ -1532,57 +1566,87 @@ export async function handleMongoCommunication(req: Request, res: Response) {
 
       let successCount = 0;
       let failCount = 0;
+      let apiDeliveredCount = 0;
 
-      // Broadcast message to each recipient DM
+      const embedsArray = (embed && (embed.title || embed.description)) ? [{
+        title: embed.title || null,
+        description: embed.description || null,
+        colour: embed.colour || '#f59e0b',
+        url: embed.url || null,
+      }] : [];
+
+      // Broadcast message to each recipient via official stoat.js / revolt.js Bot client so real-time WebSocket events fire
       for (const targetUserId of recipientUserIds) {
-        try {
-          // Find or create DirectMessage channel between effectiveBotId and targetUserId
-          let dmChannel = await channelsColl.findOne({
-            channel_type: 'DirectMessage',
-            recipients: { $all: [effectiveBotId, targetUserId] }
-          });
+        let deliveredViaApi = false;
 
-          if (!dmChannel) {
-            const newChannelId = generateCrockfordUlid();
-            dmChannel = {
-              _id: newChannelId,
-              channel_type: 'DirectMessage',
-              active: true,
-              recipients: [effectiveBotId, targetUserId],
-              last_message_id: null,
-            };
-            await channelsColl.insertOne(dmChannel);
+        // 1. Try sending through revolt.js authenticated bot client
+        if (effectiveBotToken) {
+          try {
+            const sendResult = await sendAnnouncementViaRevoltJs(
+              targetUserId,
+              content,
+              embedsArray,
+              effectiveBotToken,
+              apiUrl
+            );
+
+            if (sendResult.success) {
+              deliveredViaApi = true;
+              apiDeliveredCount++;
+              successCount++;
+            }
+          } catch {
+            // Handled via DB fallback below
           }
+        }
 
-          // Construct message document
-          const messageId = generateCrockfordUlid();
-          const embedsArray = (embed && (embed.title || embed.description)) ? [{
-            type: 'Text',
-            title: embed.title || null,
-            description: embed.description || null,
-            colour: embed.colour || '#f59e0b',
-            url: embed.url || null,
-          }] : [];
+        // 2. Fallback to direct DB insert if Bot API was unreachable or no token available
+        if (!deliveredViaApi) {
+          try {
+            let dmChannel = await channelsColl.findOne({
+              channel_type: 'DirectMessage',
+              recipients: { $all: [effectiveBotId, targetUserId] }
+            });
 
-          const messageDoc = {
-            _id: messageId,
-            channel: dmChannel._id,
-            author: effectiveBotId,
-            content: content.trim(),
-            embeds: embedsArray,
-            created_at: new Date().toISOString(),
-          };
+            if (!dmChannel) {
+              const newChannelId = generateCrockfordUlid();
+              dmChannel = {
+                _id: newChannelId,
+                channel_type: 'DirectMessage',
+                active: true,
+                recipients: [effectiveBotId, targetUserId],
+                last_message_id: null,
+              };
+              await channelsColl.insertOne(dmChannel);
+            }
 
-          await messagesColl.insertOne(messageDoc);
-          await channelsColl.updateOne(
-            { _id: dmChannel._id },
-            { $set: { last_message_id: messageId, active: true } }
-          );
+            const messageId = generateCrockfordUlid();
+            const messageDoc = {
+              _id: messageId,
+              channel: dmChannel._id,
+              author: effectiveBotId,
+              content: content.trim(),
+              embeds: embedsArray.map((e) => ({
+                type: 'Text',
+                title: e.title,
+                description: e.description,
+                colour: e.colour,
+                url: e.url,
+              })),
+              created_at: new Date().toISOString(),
+            };
 
-          successCount++;
-        } catch (e) {
-          console.warn(`Failed to deliver broadcast to ${targetUserId}:`, e);
-          failCount++;
+            await messagesColl.insertOne(messageDoc);
+            await channelsColl.updateOne(
+              { _id: dmChannel._id },
+              { $set: { last_message_id: messageId, active: true } }
+            );
+
+            successCount++;
+          } catch (e) {
+            console.warn(`Failed to deliver fallback broadcast to ${targetUserId}:`, e);
+            failCount++;
+          }
         }
       }
 
@@ -1593,7 +1657,7 @@ export async function handleMongoCommunication(req: Request, res: Response) {
         actor_id: actor_id || 'admin',
         target_id: effectiveBotId,
         target_type: 'User',
-        reason: `Broadcast sent via bot @${senderBotUser.username} to ${successCount} user(s)`,
+        reason: `Broadcast sent via bot @${senderBotUser.username} (${apiDeliveredCount > 0 ? 'Bot API Events' : 'Direct DB'}) to ${successCount} user(s)`,
         details: {
           broadcast_id: broadcastId,
           bot_id: effectiveBotId,
@@ -1601,7 +1665,9 @@ export async function handleMongoCommunication(req: Request, res: Response) {
           target_type,
           recipient_count: recipientUserIds.length,
           delivered_count: successCount,
+          api_delivered_count: apiDeliveredCount,
           failed_count: failCount,
+          dispatch_mode: apiDeliveredCount > 0 ? 'BotApiWithEvents' : (effectiveBotToken ? 'HybridWithFallback' : 'DirectDbOnly'),
           content_preview: content.length > 80 ? `${content.slice(0, 80)}...` : content,
           has_embed: Boolean(embed?.title || embed?.description),
         },
@@ -1613,7 +1679,9 @@ export async function handleMongoCommunication(req: Request, res: Response) {
         broadcast_id: broadcastId,
         total_recipients: recipientUserIds.length,
         successful_deliveries: successCount,
+        api_deliveries: apiDeliveredCount,
         failed_deliveries: failCount,
+        dispatch_mode: apiDeliveredCount > 0 ? 'BotApiWithEvents' : 'DirectDbFallback',
         timestamp: new Date().toISOString(),
       });
     } catch (err: unknown) {

@@ -156,8 +156,10 @@ export interface CommunicationBroadcastResult {
   success: boolean;
   total_recipients: number;
   successful_deliveries: number;
+  api_deliveries?: number;
   failed_deliveries: number;
   broadcast_id: string;
+  dispatch_mode?: string;
   timestamp: string;
 }
 

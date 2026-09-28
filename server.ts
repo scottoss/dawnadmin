@@ -23,6 +23,7 @@ import {
   handleMongoBots,
   handleMongoCommunication
 } from './server/routes.ts';
+import { getOrInitBotClient } from './server/botClient.ts';
 import { fileURLToPath } from 'url';
 
 dotenv.config();
@@ -140,6 +141,19 @@ async function startServer() {
 
   app.listen(port, () => {
     console.log(`[DawnChat Admin Console] Listening on http://0.0.0.0:${port}`);
+
+    // Auto-login to announcement bot with stoat.js / revolt.js if token is present
+    if (process.env.ANNOUNCEMENT_BOT_TOKEN || process.env.BOT_TOKEN) {
+      getOrInitBotClient()
+        .then((client) => {
+          if (client) {
+            console.log(`[stoat.js / revolt.js] Announcement bot client initialized`);
+          }
+        })
+        .catch((err) => {
+          console.warn('[stoat.js / revolt.js] Initial bot login notice:', err?.message || err);
+        });
+    }
   });
 }
 
